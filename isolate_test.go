@@ -87,8 +87,20 @@ func TestProjectName(t *testing.T) {
 }
 
 func TestBridgeName(t *testing.T) {
-	if bridgeName("client-a") != "cli-isolate-client-a-net" {
-		t.Errorf("bridgeName = %q", bridgeName("client-a"))
+	br := bridgeName("client-a")
+	if len(br) != 11 {
+		t.Errorf("bridgeName = %q (len=%d), want 11 chars", br, len(br))
+	}
+	if br[:3] != "br-" {
+		t.Errorf("bridgeName = %q, want br- prefix", br)
+	}
+	// Must be deterministic
+	if bridgeName("client-a") != bridgeName("client-a") {
+		t.Error("bridgeName is not deterministic")
+	}
+	// Different names should produce different bridges
+	if bridgeName("client-a") == bridgeName("client-b") {
+		t.Error("bridgeName collision between client-a and client-b")
 	}
 }
 

@@ -19,7 +19,6 @@ const (
 	configFile   = "config.yaml"
 	luksPrefix   = "cr-"
 	projectPfx   = "cli-isolate-"
-	bridgeSuffix = "-net"
 	sshKeyName   = "id_ed25519"
 )
 
@@ -181,7 +180,18 @@ func sshKeyPath(name string) string       { return filepath.Join(isolateDir(name
 func sshPubKeyPath(name string) string    { return filepath.Join(isolateDir(name), sshKeyName+".pub") }
 func mapperName(name string) string       { return luksPrefix + name }
 func projectName(name string) string      { return projectPfx + name }
-func bridgeName(name string) string       { return projectPfx + name + bridgeSuffix }
+func bridgeName(name string) string {
+	// LXD network names have a 15-char limit. Use deterministic short hash.
+	h := 0
+	for _, b := range []byte(name) {
+		h = (h + int(b)) * 31
+		if h < 0 {
+			h = -h
+		}
+	}
+	// Format as "br-" + 8 hex chars = 11 chars, safely under 15
+	return fmt.Sprintf("br-%08x", h&0xFFFFFFFF)
+}
 func activeIPFile(name string) string     { return filepath.Join(isolateDir(name), "active_ip") }
 func activeMountFile(name string) string  { return filepath.Join(isolateDir(name), "active_mount") }
 func configFilePath(name string) string   { return filepath.Join(isolateDir(name), configFile) }

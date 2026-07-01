@@ -41,9 +41,8 @@ func TestMain(m *testing.M) {
 // Returns stdout, stderr, and error.
 func runIsolate(stdin string, args ...string) (string, string, error) {
 	cmd := exec.Command(isolatePath, args...)
-	cmd.Env = append(os.Environ(),
-		// Suppress password prompt fallback — tests always use --password-stdin
-	)
+	cmd.Env = os.Environ()
+	// Note: tests always use --password-stdin so no password prompt needed
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
