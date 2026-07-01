@@ -1,0 +1,250 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/spf13/cobra"
+)
+
+var (
+	createImage     string
+	createSize      string
+	createProvision string
+)
+
+var createCmd = &cobra.Command{
+	Use:   "create <name>",
+	Short: "Create a new isolated workspace",
+	Long: `Creates a LXD VM with a LUKS-encrypted data volume.
+
+The VM runs the specified Ubuntu image. A user matching the isolate name is
+created with passwordless sudo. The encrypted data volume mounts at ~/workspace.
+
+Each isolate gets its own LXD project with an isolated bridge network to
+prevent cross-client network access.
+
+Data is encrypted at rest when the isolate is down.`,
+	Args: cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		createIsolate(args[0])
+	},
+}
+
+func init() {
+	createCmd.Flags().StringVarP(&createImage, "image", "i", "ubuntu:24.04", "LXD image for the VM")
+	createCmd.Flags().StringVarP(&createSize, "size", "s", "100G", "Data volume size (e.g. 50G, 200G)")
+	createCmd.Flags().StringVarP(&createProvision, "provision", "p", "", "Optional script to run inside the VM after setup")
+	rootCmd.AddCommand(createCmd)
+}
+
+func createIsolate(name string) {
+	if !validName(name) {
+		fatal("invalid name: use only letters, numbers, and hyphens")
+	}
+
+	checkLXD()
+	checkDeps("cryptsetup", "truncate", "mkfs.btrfs", "ssh-keygen")
+
+	dir := isolateDir(name)
+	ensureDir(dir)
+
+	if fileExists(configFilePath(name)) {
+		fatal("isolate '%s' already exists", name)
+	}
+
+	password := promptPassword("LUKS passphrase for "+name, true)
+	imgPath := dataVolumePath(name)
+	project := projectName(name)
+	bridge := bridgeName(name)
+	mapper := mapperName(name)
+
+	// 1. Sparse data volume
+	step("Creating sparse data volume (%s)...", createSize)
+	mustQuiet("truncate", "-s", createSize, imgPath)
+
+	// 2. LUKS format
+	step("Formatting with LUKS...")
+	mustStdin(password+"\n", "cryptsetup", "luksFormat", "--key-file=-", imgPath)
+
+	// 3. Open LUKS + mkfs.btrfs + workspace dir
+	step("Creating btrfs filesystem...")
+	mustStdin(password+"\n", "cryptsetup", "open", "--key-file=-", imgPath, mapper)
+	mustQuiet("mkfs.btrfs", "-L", name, "/dev/mapper/"+mapper)
+
+	tmpMount, _ := os.MkdirTemp("", "cli-isolate-"+name)
+	mustQuiet("mount", "/dev/mapper/"+mapper, tmpMount)
+	os.MkdirAll(filepath.Join(tmpMount, "workspace"), 0755)
+	mustQuiet("umount", tmpMount)
+	os.RemoveAll(tmpMount)
+	mustQuiet("cryptsetup", "close", mapper)
+
+	// 4. SSH key pair
+	step("Generating SSH key pair...")
+	mustQuiet("ssh-keygen", "-t", "ed25519", "-f", sshKeyPath(name), "-N", "", "-C", "cli-isolate-"+name)
+
+	// 5. LXD project + isolated network
+	step("Setting up LXD project and network...")
+	runQuiet("lxc", "project", "delete", project) // remove stale project if any
+	must("lxc", "project", "create", project,
+		"--config", "features.networks=true",
+		"--config", "features.images=false")
+
+	subnet := subnetFor(name)
+	must("lxc", "network", "create", bridge,
+		"--project", project,
+		fmt.Sprintf("ipv4.address=%s.1/24", subnet),
+		"ipv4.nat=true",
+		"ipv6.address=none")
+
+	// 6. Create VM
+	step("Launching VM...")
+	must("lxc", "init", createImage, name, "--project", project, "--vm")
+	must("lxc", "config", "device", "add", name, "data", "disk",
+		"--project", project, "source="+imgPath)
+	must("lxc", "config", "device", "add", name, "eth0", "nic",
+		"--project", project, "nictype=bridged", "parent="+bridge, "name=eth0")
+
+	// 7. Start and provision
+	must("lxc", "start", name, "--project", project)
+	waitForGuest(name, project)
+
+	step("Creating user '%s'...", name)
+	pubKey := mustReadFileStr(sshPubKeyPath(name))
+
+	lxcExec(name, project, "useradd", "-m", "-G", "sudo", name)
+	lxcExec(name, project, "bash", "-c",
+		fmt.Sprintf("echo '%s ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers.d/%s", name, name))
+	lxcExec(name, project, "bash", "-c",
+		fmt.Sprintf("mkdir -p /home/%s/.ssh && chmod 700 /home/%s/.ssh", name, name))
+	lxcExec(name, project, "bash", "-c",
+		fmt.Sprintf("echo '%s' >> /home/%s/.ssh/authorized_keys", escQuote(pubKey), name))
+	lxcExec(name, project, "bash", "-c",
+		fmt.Sprintf("chown -R %s:%s /home/%s && chmod 600 /home/%s/.ssh/authorized_keys",
+			name, name, name, name))
+
+	// 8. Helper scripts
+	step("Installing helper scripts...")
+	pushInitScript(name, project)
+	pushDownScript(name, project)
+
+	lxcExec(name, project, "bash", "-c",
+		fmt.Sprintf("mkdir -p /home/%s/workspace && chown %s:%s /home/%s/workspace",
+			name, name, name, name))
+
+	// 9. Optional provision script
+	if createProvision != "" {
+		step("Running provision script: %s...", createProvision)
+		remotePath := fmt.Sprintf("%s/tmp/provision.sh", name)
+		runQuiet("lxc", "file", "push", createProvision, remotePath,
+			"--project", project, "--mode=0755")
+		lxcExec(name, project, "/tmp/provision.sh")
+		lxcExecQuiet(name, project, "rm", "-f", "/tmp/provision.sh")
+	}
+
+	// 10. Stop VM
+	step("Stopping VM...")
+	must("lxc", "stop", name, "--project", project)
+
+	// 11. Save config
+	cfg := DefaultConfig(name, createImage, createSize)
+	cfg.ProvisionScript = createProvision
+	if err := SaveConfig(cfg); err != nil {
+		fatal("cannot save config: %v", err)
+	}
+
+	fmt.Println()
+	info("isolate '%s' created", name)
+	info("  up:     isolate up %s", name)
+	info("  exec:   isolate exec %s", name)
+	info("  mount:  isolate mount %s <host-path>", name)
+}
+
+func step(f string, args ...any) {
+	fmt.Printf("==> %s\n", fmt.Sprintf(f, args...))
+}
+
+func info(f string, args ...any) {
+	fmt.Printf("    %s\n", fmt.Sprintf(f, args...))
+}
+
+func validName(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func must(name string, args ...string) {
+	if err := run(name, args...); err != nil {
+		fatal("'%s' failed: %v", name, err)
+	}
+}
+
+func mustQuiet(name string, args ...string) {
+	if err := runQuiet(name, args...); err != nil {
+		fatal("'%s' failed: %v", name, err)
+	}
+}
+
+func mustStdin(stdin, name string, args ...string) {
+	if err := runWithStdin(stdin, name, args...); err != nil {
+		fatal("'%s' failed: %v", name, err)
+	}
+}
+
+func timeSleep(sec int) {
+	time.Sleep(time.Duration(sec) * time.Second)
+}
+
+func pushInitScript(name, project string) {
+	script := fmt.Sprintf(`#!/bin/bash
+set -euo pipefail
+PASSWORD="$1"
+DEVICE="/dev/vdb"
+MAPPER="cr-%s"
+MOUNTPOINT="/home/%s/workspace"
+echo "$PASSWORD" | cryptsetup open --key-file=- "$DEVICE" "$MAPPER" 2>/dev/null || true
+mount "/dev/mapper/$MAPPER" "$MOUNTPOINT" 2>/dev/null || true
+`, name, name)
+	tmpFile, _ := os.CreateTemp("", "isolate-init-*")
+	tmpFile.WriteString(script)
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+
+	runQuiet("lxc", "file", "push", tmpFile.Name(),
+		fmt.Sprintf("%s/usr/local/bin/isolate-init", name),
+		"--project", project, "--mode=0755")
+}
+
+func pushDownScript(name, project string) {
+	script := fmt.Sprintf(`#!/bin/bash
+MAPPER="cr-%s"
+MOUNTPOINT="/home/%s/workspace"
+umount "$MOUNTPOINT" 2>/dev/null || true
+cryptsetup close "$MAPPER" 2>/dev/null || true
+`, name, name)
+	tmpFile, _ := os.CreateTemp("", "isolate-down-*")
+	tmpFile.WriteString(script)
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+
+	runQuiet("lxc", "file", "push", tmpFile.Name(),
+		fmt.Sprintf("%s/usr/local/bin/isolate-down", name),
+		"--project", project, "--mode=0755")
+}
+
+// filepathJoin is a stand-in so config.go doesn't import filepath
+var filepathJoin = filepath.Join
