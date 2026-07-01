@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -13,6 +15,7 @@ var (
 	createImage     string
 	createSize      string
 	createProvision string
+	createStdinPw   bool
 )
 
 var createCmd = &cobra.Command{
@@ -37,6 +40,7 @@ func init() {
 	createCmd.Flags().StringVarP(&createImage, "image", "i", "ubuntu:24.04", "LXD image for the VM")
 	createCmd.Flags().StringVarP(&createSize, "size", "s", "100G", "Data volume size (e.g. 50G, 200G)")
 	createCmd.Flags().StringVarP(&createProvision, "provision", "p", "", "Optional script to run inside the VM after setup")
+	createCmd.Flags().BoolVar(&createStdinPw, "password-stdin", false, "Read LUKS passphrase from stdin (insecure, for testing)")
 	rootCmd.AddCommand(createCmd)
 }
 
@@ -55,7 +59,7 @@ func createIsolate(name string) {
 		fatal("isolate '%s' already exists", name)
 	}
 
-	password := promptPassword("LUKS passphrase for "+name, true)
+	password := readCreatePassword(name)
 	imgPath := dataVolumePath(name)
 	project := projectName(name)
 	bridge := bridgeName(name)
@@ -244,6 +248,30 @@ cryptsetup close "$MAPPER" 2>/dev/null || true
 	runQuiet("lxc", "file", "push", tmpFile.Name(),
 		fmt.Sprintf("%s/usr/local/bin/isolate-down", name),
 		"--project", project, "--mode=0755")
+}
+
+// readCreatePassword gets the LUKS password for a create operation.
+// If --password-stdin is set, reads from stdin (trimmed).
+// Otherwise prompts interactively with confirmation.
+func readCreatePassword(name string) string {
+	if createStdinPw {
+		reader := bufio.NewReader(os.Stdin)
+		pw, _ := reader.ReadString('\n')
+		return strings.TrimSpace(pw)
+	}
+	return promptPassword("LUKS passphrase for "+name, true)
+}
+
+// readUpPassword gets the LUKS password for an up operation.
+// If --password-stdin is set, reads from stdin (trimmed).
+// Otherwise prompts interactively (single prompt).
+func readUpPassword(name string) string {
+	if upStdinPw {
+		reader := bufio.NewReader(os.Stdin)
+		pw, _ := reader.ReadString('\n')
+		return strings.TrimSpace(pw)
+	}
+	return promptPassword("LUKS passphrase for "+name, false)
 }
 
 // filepathJoin is a stand-in so config.go doesn't import filepath

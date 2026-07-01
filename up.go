@@ -8,6 +8,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var upStdinPw bool
+
 var upCmd = &cobra.Command{
 	Use:   "up <name>",
 	Short: "Start an isolate and unlock its data volume",
@@ -22,6 +24,7 @@ If another isolate is already running, prompts for confirmation first.`,
 }
 
 func init() {
+	upCmd.Flags().BoolVar(&upStdinPw, "password-stdin", false, "Read LUKS passphrase from stdin (insecure, for testing)")
 	rootCmd.AddCommand(upCmd)
 }
 
@@ -55,7 +58,7 @@ func upIsolate(name string) {
 	}
 
 	// Prompt for LUKS passphrase (single prompt)
-	password := promptPassword("LUKS passphrase for "+name, false)
+	password := readUpPassword(name)
 
 	// Decrypt + mount inside the VM via lxc exec (pipe password over stdin)
 	step("Unlocking and mounting data volume...")
