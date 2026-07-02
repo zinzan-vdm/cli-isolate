@@ -69,11 +69,10 @@ Non-interactive: `create` and `up` support `--password-stdin` to read the LUKS p
 
 ## macOS
 
-LXD is Linux-native. Three options:
+LXD is Linux-native. Run it on macOS through a local Linux VM:
 
-- **Remote LXD server** - Install `lxc` on macOS via Homebrew, add your VPS as a remote (`lxc remote add`). `isolate mount` uses rclone SFTP over SSH to the server.
-- **OrbStack** - `brew install orbstack` gives a fast Linux VM with LXD preconfigured. The `lxc` CLI works natively from macOS.
-- **Multipass** - `brew install multipass && multipass launch lxd-vm` with snap LXD inside.
+- **OrbStack (recommended)** - `brew install orbstack` gives a fast Linux VM with LXD preconfigured. The `lxc` CLI works natively from macOS. Best option for local development.
+- **Remote LXD server** - Install `lxc` on macOS via Homebrew, add a remote LXD host (`lxc remote add <host>`). `isolate mount` uses rclone SFTP to the remote. Good if you already run LXD on a VPS.
 
 ## Testing
 
