@@ -130,6 +130,26 @@ func checkLXD() {
 	}
 }
 
+// detectDefaultBridge finds the default managed LXD bridge network.
+func detectDefaultBridge() string {
+	out, err := runOutput("lxc", "network", "list", "--format=json")
+	if err != nil {
+		return "lxdbr0" // fallback
+	}
+	// Parse JSON to find the first managed bridge
+	// Format: [{"name":"lxdbr0","type":"bridge","managed":true,...}]
+	idx := strings.Index(out, `"name":"`)
+	if idx < 0 {
+		return "lxdbr0"
+	}
+	start := idx + len(`"name":"`)
+	end := strings.IndexByte(out[start:], '"')
+	if end < 0 {
+		return "lxdbr0"
+	}
+	return out[start : start+end]
+}
+
 func checkDeps(deps ...string) {
 	for _, d := range deps {
 		if _, err := exec.LookPath(d); err != nil {
