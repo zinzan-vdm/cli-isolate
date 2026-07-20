@@ -67,6 +67,8 @@ func createIsolate(name string) {
 
 	// 1. Sparse data volume
 	step("Creating sparse data volume (%s)...", createSize)
+	// Remove stale data volume from a previous partial run
+	os.Remove(imgPath)
 	mustQuiet("truncate", "-s", createSize, imgPath)
 
 	// 2. LUKS format
@@ -87,6 +89,9 @@ func createIsolate(name string) {
 
 	// 4. SSH key pair
 	step("Generating SSH key pair...")
+	// Remove stale keys from a previous partial run (ssh-keygen has no --force)
+	os.Remove(sshKeyPath(name))
+	os.Remove(sshPubKeyPath(name))
 	mustQuiet("ssh-keygen", "-t", "ed25519", "-f", sshKeyPath(name), "-N", "", "-C", "cli-isolate-"+name)
 
 	// 5. LXD project + isolated network
