@@ -97,15 +97,15 @@ func createIsolate(name string) {
 	// 5. LXD project + isolated network
 	step("Setting up LXD project and network...")
 	runQuiet("lxc", "project", "delete", project) // remove stale project if any
-	// Find the default LXD bridge for the uplink
-	defaultBridge := detectDefaultBridge()
-	must("lxc", "project", "create", project,
-		"--config", "features.networks=true",
-		"--config", "restricted.networks.uplinks="+defaultBridge)
+	must("lxc", "project", "create", project)
 
+	// Create the bridge in the default project (project-scoped networks
+	// require uplink configuration that varies across LXD versions).
+	// Each isolate gets its own unique bridge, so cross-client isolation
+	// is maintained by separate bridges regardless of which project manages them.
+	runQuiet("lxc", "network", "delete", bridge) // remove stale bridge if any
 	subnet := subnetFor(name)
 	must("lxc", "network", "create", bridge,
-		"--project", project,
 		fmt.Sprintf("ipv4.address=%s.1/24", subnet),
 		"ipv4.nat=true",
 		"ipv6.address=none")

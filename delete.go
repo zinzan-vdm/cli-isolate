@@ -63,9 +63,13 @@ func deleteIsolate(name string) {
 	step("Deleting VM...")
 	runQuiet("lxc", "delete", "--force", name, "--project", project)
 
-	// Delete project (this cleans up the bridge network too)
+	// Delete project
 	step("Deleting LXD project...")
 	runQuiet("lxc", "project", "delete", project)
+
+	// Delete the bridge network from the default project
+	step("Deleting bridge network...")
+	runQuiet("lxc", "network", "delete", bridgeName(name))
 
 	// Wipe LUKS header
 	imgPath := dataVolumePath(name)
