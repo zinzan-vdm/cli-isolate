@@ -110,7 +110,12 @@ func createIsolate(name string) {
 		"ipv4.nat=true",
 		"ipv6.address=none")
 
-	// 6. Create VM
+	// 6. Copy the default profile so VMs get a root disk device
+	// (new projects start with an empty default profile)
+	runQuiet("lxc", "profile", "copy", "default", "default",
+		"--project", "default", "--target-project", project)
+
+	// 7. Create VM
 	step("Launching VM...")
 	must("lxc", "init", createImage, name, "--project", project, "--vm")
 	must("lxc", "config", "device", "add", name, "data", "disk",
